@@ -102,6 +102,10 @@ void GrogHost::onStartGame(bool newGame) {
   director.reset();
   actor.reset();
   hint.clear();
+  if(directorPending.valid())
+    directorPending.wait();
+  directorPending = {};
+  finished       = false;
   hintShown      = false;
   newGamePending = newGame;
   startTicks     = nowMs();
@@ -137,7 +141,7 @@ void GrogHost::onStartGame(bool newGame) {
   director = makeProvider(config.director, *http);
 
   uint64_t seed = config.seed.value_or(uint64_t(std::chrono::system_clock::now().time_since_epoch().count()));
-  fs::path logDir = pathFromUtf8(config.logDir);
+  logDir = pathFromUtf8(config.logDir);
   if(logDir.is_relative())
     logDir = root / logDir;
   if(!writableDir(logDir))
@@ -152,6 +156,9 @@ void GrogHost::onStartGame(bool newGame) {
   }
 
 void GrogHost::onSessionExit() {
+  if(directorPending.valid())
+    directorPending.wait();
+  directorPending = {};
   // Wait for answers still in flight: they reference the session.
   for(auto& f:orphans)
     if(f.valid())
@@ -162,6 +169,8 @@ void GrogHost::onSessionExit() {
   }
 
 void GrogHost::tick() {
+  if(auto* world = Gothic::inst().world())
+    tickDirector(*world);
   orphans.erase(std::remove_if(orphans.begin(), orphans.end(), [](std::future<TurnResult>& f) {
                   return !f.valid() || f.wait_for(std::chrono::seconds(0))==std::future_status::ready;
                 }),
@@ -180,7 +189,82 @@ std::string GrogHost::takeHint() {
   return hint;
   }
 
-int64_t GrogHost::gameTimeS() const { return (nowMs()-startTicks)/1000; }
+int64_t GrogHost::gameTimeS() const {
+  // World ticks are saved with the game, so the AI clock survives save/load.
+  if(auto* world = Gothic::inst().world())
+    return int64_t(world->tickCount()/1000);
+  return (nowMs()-startTicks)/1000;
+  }
+
+void GrogHost::tickDirector(World& world) {
+  if(session==nullptr || finished)
+    return;
+  if(directorPending.valid()) {
+    if(directorPending.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
+      return;
+    DirectorResult r = directorPending.get();
+    if(Npc* hero = world.player(); hero!=nullptr && gameData)
+      execute(toEngineActions(r.verdicts, kDirector, *gameData), world, *hero);
+    return;
+    }
+  int64_t t = gameTimeS();
+  if(session->directorDue(t))
+    directorPending = session->directAsync("tick", t);
+  }
+
+void GrogHost::syncPlayerItems(World& world, Npc& hero) {
+  if(session==nullptr || !gameData)
+    return;
+  std::set<std::string> carried;
+  for(auto& [id, inst]:gameData->items) {
+    size_t sym = world.script().findSymbolIndex(inst);
+    if(sym!=size_t(-1) && hero.itemCount(sym)>0)
+      carried.insert(id);
+    }
+  session->syncPlayerItems(carried);
+  }
+
+void GrogHost::onKnockout(Npc& victim, Npc* attacker, bool death) {
+  if(session==nullptr || attacker==nullptr || death)
+    return;
+  Npc* npc = victim.isPlayer() ? attacker : (attacker->isPlayer() ? &victim : nullptr);
+  if(npc==nullptr)
+    return;
+  if(auto id = aiNpcId(*npc))
+    session->reportFight(*id, !victim.isPlayer(), gameTimeS());
+  }
+
+std::string GrogHost::saveJson() {
+  if(session==nullptr)
+    return {};
+  return session->saveState().dump();
+  }
+
+void GrogHost::setPendingLoad(std::string json) {
+  pendingLoad = std::move(json);
+  }
+
+void GrogHost::finishGame(const std::string& outcome) {
+  if(finished || session==nullptr)
+    return;
+  finished = true;
+  const char* pl = outcome=="returned" ? "Greg odzyskal kufel! Klucz do skrzyni jest twoj."
+                 : outcome=="fooled"   ? "Greg dal sie nabrac. Klucz do skrzyni jest twoj... na razie."
+                 : outcome=="caught"   ? "Greg przejrzal oszustwo. Koniec przygody."
+                                       : "Poddales sie. Greg jest wsciekly.";
+  const char* en = outcome=="returned" ? "Greg got his tankard back! The chest key is yours."
+                 : outcome=="fooled"   ? "Greg fell for it. The chest key is yours... for now."
+                 : outcome=="caught"   ? "Greg saw through the trick. The adventure is over."
+                                       : "You gave up. Greg is furious.";
+  Gothic::inst().onPrint(ui(pl, en));
+  auto sum = session->summary();
+  std::error_code ec;
+  fs::create_directories(logDir, ec);
+  std::ofstream f(logDir / ("summary-" + std::to_string(sum.value("seed", uint64_t(0))) + ".json"), std::ios::binary);
+  f << sum.dump(2) << "\n";
+  if(telemetry)
+    telemetry->event("ending", sum);
+  }
 
 std::optional<std::string> GrogHost::aiNpcId(const Npc& npc) const {
   if(!gameData || session==nullptr)
@@ -198,6 +282,17 @@ std::optional<std::string> GrogHost::aiNpcId(const Npc& npc) const {
   }
 
 void GrogHost::onWorldLoaded(World& world) {
+  if(!pendingLoad.empty() && session!=nullptr) {
+    auto j = nlohmann::json::parse(pendingLoad, nullptr, false);
+    auto r = session->loadState(j);
+    if(!r.ok()) {
+      Tempest::Log::e("[grog] ", r.error().message);
+      hint = ui("Ten zapis nie ma stanu AI (starsza wersja moda) - Mistrz Gry zaczyna od nowa.",
+                "This save has no AI state (older mod version) - the Game Master starts over.");
+      }
+    pendingLoad.clear();
+    finished = session->ending().has_value();
+    }
   if(!newGamePending || !gameData)
     return;
   newGamePending = false;
@@ -270,6 +365,19 @@ void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, N
           }
         break;
         }
+      case EngineAction::TakeItemFromPlayer: {
+        Npc*   npc  = findNpc(world, a.npcInstance);
+        size_t item = script.findSymbolIndex(a.itemInstance);
+        if(npc!=nullptr && item!=size_t(-1) && hero.itemCount(item)>0) {
+          hero.delItem(item,1);
+          npc->addItem(item,1);
+          Gothic::inst().onPrint(ui("Oddano przedmiot", "Item handed over"));
+          }
+        break;
+        }
+      case EngineAction::EndGame:
+        finishGame(a.text);
+        break;
       case EngineAction::StartFight:
       case EngineAction::NpcFightNpc: {
         Npc* npc    = findNpc(world, a.npcInstance);

@@ -64,6 +64,8 @@ bool DialogMenu::grogStart(Npc& p, Npc& ot) {
   end.title = host.ui("KONIEC", "END");
   choice    = {end};
 
+  if(auto* world = Gothic::inst().world())
+    host.syncPlayerItems(*world, p);
   std::string hint = host.takeHint();
   if(!hint.empty())
     Gothic::inst().onPrint(hint);

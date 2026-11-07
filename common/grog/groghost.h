@@ -7,6 +7,7 @@
 #include <grog/ai/session.h>
 #include <grog/ai/telemetry.h>
 
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <memory>
@@ -41,6 +42,15 @@ class GrogHost final {
     // Executes engine actions produced by the AI. `hero` is the player.
     void execute(const std::vector<grog::ai::EngineAction>& actions, World& world, Npc& hero);
 
+    // Story items the hero carries -> AI world state (call before a conversation).
+    void syncPlayerItems(World& world, Npc& hero);
+    // Npc::onNoHealth hook: `victim` was knocked out (or killed) by `attacker`.
+    void onKnockout(Npc& victim, Npc* attacker, bool death);
+
+    // Save/load: JSON blob stored in the save archive as "grog/state.json".
+    std::string saveJson();
+    void        setPendingLoad(std::string json);
+
     // A dialog closed while an answer was pending: keep the future alive until it finishes.
     void adopt(std::future<grog::ai::TurnResult>&& f);
 
@@ -49,6 +59,9 @@ class GrogHost final {
   private:
     GrogHost() = default;
     void setupWorld(World& world);
+    void tickDirector(World& world);
+    void finishGame(const std::string& outcome);
+    std::filesystem::path logDir;
 
     std::optional<grog::ai::GameData>             gameData;
     grog::ai::AiConfig                            config;
@@ -58,6 +71,9 @@ class GrogHost final {
     std::unique_ptr<grog::ai::Telemetry>          telemetry;
     std::unique_ptr<grog::ai::GameSession>        session;
     std::vector<std::future<grog::ai::TurnResult>> orphans;
+    std::future<grog::ai::DirectorResult>          directorPending;
+    std::string                                   pendingLoad;
+    bool                                          finished = false;
     std::string                                   hint;
     bool                                          hintShown = false;
     bool                                          newGamePending = false;

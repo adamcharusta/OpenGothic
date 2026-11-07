@@ -18,6 +18,7 @@
 #include "camera.h"
 #include "gothic.h"
 #include "resources.h"
+#include "grog/groghost.h" // GROG:
 
 using namespace Tempest;
 
@@ -593,6 +594,9 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
   }
 
 void Npc::onNoHealth(bool death, HitSound sndMask) {
+#ifdef GROG_AI
+  GrogHost::inst().onKnockout(*this, lastHit, death); // GROG:
+#endif
   invent.switchActiveWeapon(*this,Item::NSLOT);
   visual.dropWeapon(*this);
   visual.dropShield(*this);

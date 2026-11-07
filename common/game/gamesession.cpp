@@ -14,6 +14,7 @@
 #include "serialize.h"
 #include "camera.h"
 #include "gothic.h"
+#include "grog/groghost.h" // GROG:
 
 using namespace Tempest;
 
@@ -167,6 +168,14 @@ GameSession::GameSession(Serialize &fin) {
 
   fin.setEntry("game/camera");
   cam->load(fin,wrld->player());
+#ifdef GROG_AI
+  { // GROG: AI Game Master state (applied on the main thread in GrogHost::onWorldLoaded)
+    std::string st;
+    if(fin.setEntry("grog/state.json"))
+      fin.read(st);
+    GrogHost::inst().setPendingLoad(std::move(st));
+    }
+#endif
   Gothic::inst().setLoadingProgress(96);
   }
 
@@ -223,6 +232,12 @@ void GameSession::save(Serialize &fout, std::string_view name, const Pixmap& scr
 
   fout.setEntry("game/daedalus");
   vm->saveVar(fout);
+#ifdef GROG_AI
+  if(auto st = GrogHost::inst().saveJson(); !st.empty()) { // GROG: AI Game Master state
+    fout.setEntry("grog/state.json");
+    fout.write(st);
+    }
+#endif
   Gothic::inst().setLoadingProgress(80);
   }
 
