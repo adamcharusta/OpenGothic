@@ -25,6 +25,7 @@
 #include "utils/dbgpainter.h"
 
 #include "commandline.h"
+#include "grog/groghost.h" // GROG:
 #include "gothic.h"
 
 using namespace Tempest;
@@ -1053,6 +1054,9 @@ Camera::Mode MainWindow::solveCameraMode() const {
 
 void MainWindow::startGame(std::string_view slot) {
   // gothic.emitGlobalSound(gothic.loadSoundFx("NEWGAME"));
+#ifdef GROG_AI
+  GrogHost::inst().onStartGame(true); // GROG:
+#endif
 
   if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle){
     setGameImpl(nullptr);
@@ -1069,6 +1073,9 @@ void MainWindow::startGame(std::string_view slot) {
   }
 
 void MainWindow::loadGame(std::string_view slot) {
+#ifdef GROG_AI
+  GrogHost::inst().onStartGame(false); // GROG: AI state is not in saves yet (Plan 5)
+#endif
   if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle) {
     setGameImpl(nullptr);
     }
@@ -1152,6 +1159,10 @@ void MainWindow::onStartLoading() {
 
 void MainWindow::onWorldLoaded() {
   dMouse = Point();
+#ifdef GROG_AI
+  if(auto w = Gothic::inst().world()) // GROG:
+    GrogHost::inst().onWorldLoaded(*w);
+#endif
 
   if(Gothic::inst().isBenchmarkMode()) {
     if(auto world = Gothic::inst().world()) {
@@ -1184,6 +1195,9 @@ void MainWindow::onWorldLoaded() {
   }
 
 void MainWindow::onSessionExit() {
+#ifdef GROG_AI
+  GrogHost::inst().onSessionExit(); // GROG:
+#endif
   rootMenu.setMainMenu();
   }
 

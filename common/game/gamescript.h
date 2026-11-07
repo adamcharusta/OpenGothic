@@ -111,6 +111,7 @@ class GameScript final {
     zenkit::DaedalusSymbol*     findSymbol(std::string_view s);
     zenkit::DaedalusSymbol*     findSymbol(const size_t s);
     size_t                      findSymbolIndex(std::string_view s);
+    void                        grogQuestEntry(std::string_view topic, std::string_view entry); // GROG:
     size_t                      symbolsCount() const;
 
     const AiState&              aiState  (ScriptFn id);

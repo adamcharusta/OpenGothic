@@ -10,6 +10,11 @@
 #include "game/gamescript.h"
 #include "camera.h"
 
+#ifdef GROG_AI
+#include <future>
+#include <grog/ai/session.h> // GROG:
+#endif
+
 class Npc;
 class Interactive;
 class InventoryMenu;
@@ -146,4 +151,24 @@ class DialogMenu : public Tempest::Widget {
     bool                                showSubtitles       = true;
     bool                                showSubtitlesPlayer = true;
     uint64_t                            choiceAnimTime      = 0;
+
+#ifdef GROG_AI
+    // GROG: AI dialogue mode ("Grog i klamstwa"): free text input instead of script choices.
+    struct GrogState {
+      bool                               active   = false;
+      bool                               endAfter = false;  // close after the current line
+      std::string                        npcId;
+      std::string                        input;             // UTF-8
+      std::future<grog::ai::TurnResult>  pending;
+      };
+    GrogState                           grog;
+
+    bool grogStart  (Npc& pl, Npc& other);
+    bool grogKeyDown(Tempest::KeyEvent& e);
+    void grogTick   ();
+    void grogSay    (Npc& npc, std::string_view gameText);
+    void grogEnd    ();
+    void grogReset  ();
+    int  grogPaintInput(Tempest::Painter* p, int x, int y, int w);  // returns height; p==nullptr measures
+#endif
   };

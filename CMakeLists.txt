@@ -86,6 +86,16 @@ add_subdirectory(spacer/assets)
 
 include_directories("common")
 
+# GROG: link the "Grog i klamstwa" AI library when the parent repository provides it.
+set(GROG_AICORE_DIR "${CMAKE_SOURCE_DIR}/../aicore" CACHE PATH "Path to the Grog i klamstwa aicore library")
+if(EXISTS "${GROG_AICORE_DIR}/CMakeLists.txt")
+  set(GROG_AICORE_TESTS OFF CACHE BOOL "" FORCE)
+  set(GROG_AICORE_CLI   OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${GROG_AICORE_DIR}" "${CMAKE_BINARY_DIR}/aicore")
+  target_link_libraries(${PROJECT_NAME} aicore)
+  target_compile_definitions(${PROJECT_NAME} PUBLIC GROG_AI=1)
+endif()
+
 ## submodule dependencies
 
 # edd-dbg

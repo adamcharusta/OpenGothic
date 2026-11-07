@@ -65,6 +65,9 @@ void DialogMenu::setupSettings() {
   }
 
 void DialogMenu::tick(uint64_t dt) {
+#ifdef GROG_AI
+  grogTick(); // GROG:
+#endif
   if(state==State::PreStart) {
     except.clear();
     dlgTrade=false;
@@ -269,6 +272,10 @@ bool DialogMenu::hasContent() const {
   }
 
 bool DialogMenu::onStart(Npc &p, Npc &ot) {
+#ifdef GROG_AI
+  if(grogStart(p,ot)) // GROG:
+    return true;
+#endif
   choice         = ot.dialogChoices(p,except,state==State::PreStart);
   state          = State::Active;
   depth          = 0;
@@ -350,6 +357,9 @@ void DialogMenu::onDoneText() {
   }
 
 void DialogMenu::close() {
+#ifdef GROG_AI
+  grogReset(); // GROG:
+#endif
   auto prevPl  = pl;
   auto prevNpc = other;
 
@@ -492,6 +502,10 @@ void DialogMenu::paintChoice(PaintEvent &e) {
   const bool  isActive = isChoiceMenuActive();
 
   int  dh = padd*2;
+#ifdef GROG_AI
+  if(grog.active)
+    dh += grogPaintInput(nullptr,0,0,dw-padd); // GROG: room for the input line
+#endif
   for(size_t i=0;i<choice.size();++i){
     auto fnt = Resources::dialogFont(scale);
     Size choiceTextSize = fnt.textSize(dw-padd, choice[i].title);
@@ -520,6 +534,10 @@ void DialogMenu::paintChoice(PaintEvent &e) {
 
   int textHeightOffset = padd;
   Painter p(e);
+#ifdef GROG_AI
+  if(grog.active)
+    textHeightOffset += grogPaintInput(&p,x+padd,y+padd+textHeightOffset,dw-padd); // GROG:
+#endif
   for(size_t i=0;i<choice.size();++i){
     GthFont fnt;
     if(i==dlgSel)
@@ -540,6 +558,12 @@ void DialogMenu::onSelect() {
   if(current.time>0 || haveToWaitOutput()){
     return;
     }
+#ifdef GROG_AI
+  if(grog.active) { // GROG: the only choice is "End"
+    grogEnd();
+    return;
+    }
+#endif
 
   if(dlgSel<choice.size()) {
     onEntry(choice[dlgSel]);
@@ -581,6 +605,10 @@ void DialogMenu::keyDownEvent(KeyEvent &e) {
     return;
     }
 
+#ifdef GROG_AI
+  if(grog.active && grogKeyDown(e)) // GROG:
+    return;
+#endif
   if(e.key==Event::K_Return){
     onSelect();
     return;

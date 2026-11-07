@@ -3284,6 +3284,12 @@ void GameScript::log_settopicstatus(std::string_view topicName, int status) {
     quests.setStatus(topicName,QuestLog::Status(status));
   }
 
+// GROG: quest log entries written by the AI Game Master
+void GameScript::grogQuestEntry(std::string_view topic, std::string_view entry) {
+  quests.add(topic,QuestLog::Mission);
+  quests.addEntry(topic,entry);
+  }
+
 void GameScript::log_addentry(std::string_view topicName, std::string_view entry) {
   quests.addEntry(topicName,entry);
   }
