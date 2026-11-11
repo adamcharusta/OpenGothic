@@ -166,6 +166,9 @@ void GrogHost::onSessionExit() {
   if(directorPending.valid())
     directorPending.wait();
   directorPending = {};
+  if(session!=nullptr && !finished)
+    writeSummary("summary");  // quit without an ending: outcome "playing"
+
   // Wait for answers still in flight: they reference the session.
   for(auto& f:orphans)
     if(f.valid())
@@ -360,13 +363,19 @@ void GrogHost::finishGame(const std::string& outcome) {
                  : outcome=="caught"   ? "Greg saw through the trick. The adventure is over."
                                        : "You gave up. Greg is furious.";
   Gothic::inst().onPrint(ui(pl, en));
+  writeSummary("ending");
+  }
+
+void GrogHost::writeSummary(const char* event) {
+  if(session==nullptr)
+    return;
   auto sum = session->summary();
   std::error_code ec;
   fs::create_directories(logDir, ec);
   std::ofstream f(logDir / ("summary-" + std::to_string(sum.value("seed", uint64_t(0))) + ".json"), std::ios::binary);
   f << sum.dump(2) << "\n";
   if(telemetry)
-    telemetry->event("ending", sum);
+    telemetry->event(event, sum);
   }
 
 std::optional<std::string> GrogHost::aiNpcId(const Npc& npc) const {

@@ -68,6 +68,7 @@ class GrogHost final {
     void setupWorld(World& world);
     void tickDirector(World& world);
     void finishGame(const std::string& outcome);
+    void writeSummary(const char* event);  // summary-<seed>.json + a log event ("ending" / "summary")
     void tickFights(World& world);
     void startFistFight(World& world, Npc& npc, Npc& target);
     void rearm(World& world, const std::string& npcInstance);

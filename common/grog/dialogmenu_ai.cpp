@@ -160,7 +160,9 @@ void DialogMenu::grogTick() {
       }
     }
   if(r.error && r.usedFallback) {
-    std::string hint = host.takeHint();
+    std::string hint = host.takeHint();  // missing/broken GrogAI.ini first
+    if(hint.empty() && !r.hint.empty())
+      hint = toGameText(r.hint);         // then what went wrong with the provider (once per kind)
     if(!hint.empty())
       Gothic::inst().onPrint(hint);
     }
