@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,6 +18,7 @@
 
 class Npc;
 class World;
+namespace zenkit { struct IItem; }
 
 class GrogHost final {
   public:
@@ -56,11 +58,25 @@ class GrogHost final {
 
     std::string ui(const char* pl, const char* en) const;  // localized UI string, cp1250
 
+    // GameScript::initializeInstanceItem hook: story items get their in-game name and description.
+    void onItemInit(zenkit::IItem& item, std::string_view instanceName);
+    // Line an NPC sent by the Game Master opens the conversation with (cp1250); empty if none. One-shot.
+    std::string takeOpening(const std::string& npcId);
+
   private:
     GrogHost() = default;
     void setupWorld(World& world);
     void tickDirector(World& world);
     void finishGame(const std::string& outcome);
+    void tickFights(World& world);
+    void startFistFight(World& world, Npc& npc, Npc& target);
+    void rearm(World& world, const std::string& npcInstance);
+
+    struct PendingFight { std::string npcInstance, targetInstance; };  // targetInstance empty = the player
+    struct Disarmed     { std::string npcInstance; size_t weapon = 0; int64_t untilS = 0; };
+    std::vector<PendingFight>                     pendingFights;   // started once the dialogue is closed
+    std::vector<Disarmed>                         disarmed;        // weapons put away for a fist fight
+    std::map<std::string, std::string>            openings;        // npc id -> opening line (cp1250)
     std::filesystem::path logDir;
 
     std::optional<grog::ai::GameData>             gameData;

@@ -17,6 +17,9 @@
 #include "utils/fileutil.h"
 #include "commandline.h"
 #include "gothic.h"
+#ifdef GROG_AI
+#include "grog/groghost.h" // GROG:
+#endif
 
 using namespace Tempest;
 
@@ -531,6 +534,9 @@ void GameScript::initializeInstanceItem(const std::shared_ptr<zenkit::IItem>& it
     }
 
   vm.init_instance(item, sym);
+#ifdef GROG_AI
+  GrogHost::inst().onItemInit(*item, sym->name()); // GROG: story items get their own name
+#endif
   }
 
 void GameScript::saveQuests(Serialize &fout) {
@@ -2529,6 +2535,11 @@ bool GameScript::npc_checkinfo(std::shared_ptr<zenkit::INpc> npcRef, int imp) {
   auto hero = findNpc(vm.global_other());
   if(n==nullptr || hero==nullptr)
     return false;
+#ifdef GROG_AI
+  // GROG: AI-driven pirates never have script infos; otherwise "important" infos make them accost the player forever.
+  if(GrogHost::inst().aiNpcId(*n))
+    return false;
+#endif
 
   auto& pl  = hero->handle();
   auto& npc = n->handle();
@@ -3282,6 +3293,24 @@ void GameScript::log_settopicstatus(std::string_view topicName, int status) {
      status==int32_t(QuestLog::Status::Failed ) ||
      status==int32_t(QuestLog::Status::Obsolete))
     quests.setStatus(topicName,QuestLog::Status(status));
+  }
+
+// GROG: fist fight started by the AI, the way the original scripts start duels (B_Attack with AR_NONE).
+bool GameScript::grogAttack(Npc& npc, Npc& target) {
+  auto* fn = vm.find_symbol_by_name("B_Attack");
+  auto* ar = vm.find_symbol_by_name("AR_NONE");
+  if(fn==nullptr)
+    return false;
+  try {
+    ScopeVar self (*vm.global_self(),  npc.handlePtr());
+    ScopeVar other(*vm.global_other(), target.handlePtr());
+    vm.call_function<void>(fn, npc.handlePtr(), target.handlePtr(), ar!=nullptr ? ar->get_int() : 0, 1);
+    }
+  catch(const std::exception& e) {
+    Tempest::Log::e("[grog] B_Attack: ", e.what());
+    return false;
+    }
+  return true;
   }
 
 // GROG: quest log entries written by the AI Game Master

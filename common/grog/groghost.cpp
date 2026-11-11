@@ -18,6 +18,10 @@
 #include "world/waypoint.h"
 #include "world/world.h"
 #include "gothic.h"
+#include "gamemusic.h"
+#include "world/objects/item.h"
+
+#include <zenkit/addon/daedalus.hh>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -107,6 +111,9 @@ void GrogHost::onStartGame(bool newGame) {
   directorPending = {};
   finished       = false;
   hintShown      = false;
+  pendingFights.clear();
+  disarmed.clear();
+  openings.clear();
   newGamePending = newGame;
   startTicks     = nowMs();
 
@@ -169,8 +176,10 @@ void GrogHost::onSessionExit() {
   }
 
 void GrogHost::tick() {
-  if(auto* world = Gothic::inst().world())
+  if(auto* world = Gothic::inst().world()) {
     tickDirector(*world);
+    tickFights(*world);
+    }
   orphans.erase(std::remove_if(orphans.begin(), orphans.end(), [](std::future<TurnResult>& f) {
                   return !f.valid() || f.wait_for(std::chrono::seconds(0))==std::future_status::ready;
                 }),
@@ -232,6 +241,100 @@ void GrogHost::onKnockout(Npc& victim, Npc* attacker, bool death) {
     return;
   if(auto id = aiNpcId(*npc))
     session->reportFight(*id, !victim.isPlayer(), gameTimeS());
+  if(auto* world = Gothic::inst().world())
+    if(auto* sym = world->script().findSymbol(size_t(npc->instanceSymbol())))
+      rearm(*world, sym->name());
+  }
+
+void GrogHost::tickFights(World& world) {
+  // A fight asked for in a conversation starts once the conversation is over (an NPC in ZS_Talk ignores it).
+  if(!pendingFights.empty() && !Gothic::inst().isInDialog()) {
+    auto fights = std::move(pendingFights);
+    pendingFights.clear();
+    Npc* hero = world.player();
+    for(auto& f:fights) {
+      Npc* npc    = findNpc(world, f.npcInstance);
+      Npc* target = f.targetInstance.empty() ? hero : findNpc(world, f.targetInstance);
+      if(npc!=nullptr && target!=nullptr && npc!=target)
+        startFistFight(world, *npc, *target);
+      }
+    }
+  const int64_t t = gameTimeS();
+  std::vector<std::string> due;
+  for(auto& d:disarmed)
+    if(t>=d.untilS)
+      due.push_back(d.npcInstance);
+  for(auto& n:due)
+    rearm(world, n);
+  }
+
+void GrogHost::startFistFight(World& world, Npc& npc, Npc& target) {
+  // Fist fight: the NPC puts its weapons away for the brawl and gets them back afterwards.
+  npc.closeWeapon(true);
+  for(Item* w : {npc.currentMeleeWeapon(), npc.currentRangedWeapon()}) {
+    if(w==nullptr)
+      continue;
+    size_t cls = w->clsId();
+    npc.unequipItem(cls);
+    if(auto* sym = world.script().findSymbol(size_t(npc.instanceSymbol())))
+      disarmed.push_back({sym->name(), cls, gameTimeS()+180});
+    }
+  if(world.script().grogAttack(npc, target))
+    return;
+  // Fallback when the script helper is missing: push the attack state directly.
+  size_t zs = world.script().findSymbolIndex("ZS_ATTACK");
+  if(zs!=size_t(-1)) {
+    auto& st = world.script().aiState(ScriptFn(zs));
+    npc.setTarget(&target);
+    npc.aiPush(AiQueue::aiStartState(st.funcIni,0,&target,nullptr,""));
+    }
+  }
+
+void GrogHost::rearm(World& world, const std::string& npcInstance) {
+  Npc* npc = findNpc(world, npcInstance);
+  for(size_t i=0; i<disarmed.size();) {
+    if(disarmed[i].npcInstance!=npcInstance) {
+      ++i;
+      continue;
+      }
+    if(npc!=nullptr && npc->itemCount(disarmed[i].weapon)>0)
+      npc->useItem(disarmed[i].weapon);
+    disarmed.erase(disarmed.begin()+long(i));
+    }
+  }
+
+void GrogHost::onItemInit(zenkit::IItem& item, std::string_view instanceName) {
+  if(!gameData)
+    return;
+  const std::string name0 = upper(instanceName);
+  for(auto& [id, inst]:gameData->items) {
+    if(upper(inst)!=name0)
+      continue;
+    auto name = gameData->itemGameNames.find(id);
+    if(name!=gameData->itemGameNames.end() && name->second.count(config.language)) {
+      item.name        = toGameText(name->second.at(config.language));
+      item.description = item.name;
+      }
+    auto text = gameData->itemGameTexts.find(id);
+    if(text!=gameData->itemGameTexts.end() && text->second.count(config.language)) {
+      // Inventory shows text[0..5]/count[0..5]: one line of description, no value.
+      for(auto& t:item.text)
+        t.clear();
+      for(auto& n:item.count)
+        n = 0;
+      item.text[0] = toGameText(text->second.at(config.language));
+      }
+    return;
+    }
+  }
+
+std::string GrogHost::takeOpening(const std::string& npcId) {
+  auto it = openings.find(npcId);
+  if(it==openings.end())
+    return {};
+  std::string s = std::move(it->second);
+  openings.erase(it);
+  return s;
   }
 
 std::string GrogHost::saveJson() {
@@ -282,6 +385,8 @@ std::optional<std::string> GrogHost::aiNpcId(const Npc& npc) const {
   }
 
 void GrogHost::onWorldLoaded(World& world) {
+  // The menu/loading theme otherwise plays on until the camp music takes over at the end of a musical phrase.
+  GameMusic::inst().setMusic(zenkit::IMusicTheme(), GameMusic::mkTags(GameMusic::Std, GameMusic::Day));
   if(!pendingLoad.empty() && session!=nullptr) {
     auto j = nlohmann::json::parse(pendingLoad, nullptr, false);
     auto r = session->loadState(j);
@@ -317,6 +422,16 @@ void GrogHost::setupWorld(World& world) {
     }
   if(auto& h = hero->handlePtr())
     h->level = gameData->start.level;
+  for(auto& [inst, count]:gameData->start.items) {
+    size_t id = script.findSymbolIndex(inst);
+    if(id==size_t(-1)) {
+      Tempest::Log::e("[grog] start item not found: ", inst);
+      continue;
+      }
+    hero->addItem(id, size_t(count));
+    if(upper(inst).rfind("ITMW_",0)==0)
+      hero->useItem(id);  // equip the starting weapon
+    }
 
   // Every cast member must be in the camp.
   for(auto& m:gameData->cast.npcs) {
@@ -379,17 +494,11 @@ void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, N
         finishGame(a.text);
         break;
       case EngineAction::StartFight:
-      case EngineAction::NpcFightNpc: {
-        Npc* npc    = findNpc(world, a.npcInstance);
-        Npc* target = a.kind==EngineAction::StartFight ? &hero : findNpc(world, a.npc2Instance);
-        size_t zs   = script.findSymbolIndex("ZS_ATTACK");
-        if(npc!=nullptr && target!=nullptr && zs!=size_t(-1)) {
-          auto& st = script.aiState(ScriptFn(zs));
-          npc->setTarget(target);
-          npc->aiPush(AiQueue::aiStartState(st.funcIni,0,target,nullptr,""));
-          }
+        pendingFights.push_back({a.npcInstance, ""});
         break;
-        }
+      case EngineAction::NpcFightNpc:
+        pendingFights.push_back({a.npcInstance, a.npc2Instance});
+        break;
       case EngineAction::NpcGoto: {
         Npc* npc = findNpc(world, a.npcInstance);
         if(auto* wp = world.findPoint(a.waypoint); npc!=nullptr && wp!=nullptr)
@@ -398,6 +507,8 @@ void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, N
         }
       case EngineAction::NpcApproachPlayer: {
         if(Npc* npc = findNpc(world, a.npcInstance)) {
+          if(auto id = aiNpcId(*npc); id && !a.text.empty())
+            openings[*id] = a.text;
           npc->aiPush(AiQueue::aiGoToNpc(&hero));
           npc->aiPush(AiQueue::aiProcessInfo(hero));
           }

@@ -69,6 +69,10 @@ bool DialogMenu::grogStart(Npc& p, Npc& ot) {
   std::string hint = host.takeHint();
   if(!hint.empty())
     Gothic::inst().onPrint(hint);
+  // Sent by the Game Master: the NPC speaks first (the line is already in its AI memory).
+  std::string opening = host.takeOpening(*id);
+  if(!opening.empty())
+    grogSay(ot, opening);
   update();
   return true;
   }
