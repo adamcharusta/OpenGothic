@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -59,6 +60,9 @@ class GrogHost final {
     // A dialog closed while an answer was pending: keep the future alive until it finishes.
     void adopt(std::future<grog::ai::TurnResult>&& f);
     void adopt(std::future<grog::ai::Speech>&& f);
+    // Called before the session is torn down (new game, load, exit): the open dialog hands its futures over via
+    // adopt(), so they are waited for while the session, TTS provider and http client still exist.
+    void setAbandonHook(std::function<void()> f) { abandonHook = std::move(f); }
 
     std::string ui(const char* pl, const char* en) const;  // localized UI string, cp1250
 
@@ -98,6 +102,7 @@ class GrogHost final {
     std::unique_ptr<grog::ai::GameSession>        session;
     std::vector<std::future<grog::ai::TurnResult>> orphans;
     std::vector<std::future<grog::ai::Speech>>     speechOrphans;
+    std::function<void()>                          abandonHook;
     std::future<grog::ai::DirectorResult>          directorPending;
     std::string                                   pendingLoad;
     bool                                          finished = false;

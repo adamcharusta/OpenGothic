@@ -193,6 +193,8 @@ void GrogHost::onSessionExit() {
   }
 
 void GrogHost::waitOrphans() {
+  if(abandonHook)
+    abandonHook();  // the open dialog's own futures first
   for(auto& f:orphans)
     if(f.valid())
       f.wait();

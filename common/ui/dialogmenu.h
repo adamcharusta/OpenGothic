@@ -171,6 +171,7 @@ class DialogMenu : public Tempest::Widget {
     void grogSay    (Npc& npc, std::string_view gameText, std::string_view wav = {});  // GROG: wav = voice
     void grogEnd    ();
     void grogReset  ();
+    void grogAbandon();  // GROG: hands pending futures to GrogHost (before its session is torn down)
     int  grogPaintInput(Tempest::Painter* p, int x, int y, int w);  // returns height; p==nullptr measures
 #endif
   };

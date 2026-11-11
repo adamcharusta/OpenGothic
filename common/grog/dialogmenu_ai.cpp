@@ -86,9 +86,8 @@ bool DialogMenu::grogStart(Npc& p, Npc& ot) {
 
   if(auto* world = Gothic::inst().world())
     host.syncPlayerItems(*world, p);
-  std::string hint = host.takeHint();
-  if(!hint.empty())
-    Gothic::inst().onPrint(hint);
+  host.setAbandonHook([this]() { grogAbandon(); });
+  printHints({});
   // Sent by the Game Master: the NPC speaks first (the line is already in its AI memory).
   std::string openingUtf8;
   std::string opening = host.takeOpening(*id, &openingUtf8);
@@ -119,7 +118,7 @@ void DialogMenu::grogSay(Npc& npc, std::string_view gameText, std::string_view w
       if(!snd.isEmpty()) {
         uint64_t ms = uint64_t(wavDurationMs(wav).value_or(int(snd.timeLength())));
         currentSnd      = soundDevice.load(snd);
-        current.msgTime = std::max<uint64_t>(ms + 300, 1500);
+        current.msgTime = std::clamp<uint64_t>(ms + 300, 1500, 60000);  // a bogus header can't hold the barrier
         currentSnd.play();
         }
       }
@@ -252,11 +251,16 @@ void DialogMenu::grogEnd() {
   update();
   }
 
-void DialogMenu::grogReset() {
+void DialogMenu::grogAbandon() {
   if(grog.pending.valid())
     GrogHost::inst().adopt(std::move(grog.pending));
   if(grog.pendingSpeech.valid())
     GrogHost::inst().adopt(std::move(grog.pendingSpeech));
+  grog.speechText.clear();
+  }
+
+void DialogMenu::grogReset() {
+  grogAbandon();
   grog = GrogState();
   }
 
