@@ -6,6 +6,7 @@
 #include <grog/ai/llm.h>
 #include <grog/ai/session.h>
 #include <grog/ai/telemetry.h>
+#include <grog/ai/tts.h>
 
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,8 @@ class GrogHost final {
     void tick();
 
     bool ready() const { return session!=nullptr; }
+    // Voice (TTS) configured: openings and farewells are synthesized asynchronously.
+    bool voiceOn() const { return session!=nullptr && tts!=nullptr; }
     grog::ai::GameSession* gameSession() { return session.get(); }
     const grog::ai::GameData* data() const { return gameData ? &*gameData : nullptr; }
 
@@ -55,13 +58,15 @@ class GrogHost final {
 
     // A dialog closed while an answer was pending: keep the future alive until it finishes.
     void adopt(std::future<grog::ai::TurnResult>&& f);
+    void adopt(std::future<grog::ai::Speech>&& f);
 
     std::string ui(const char* pl, const char* en) const;  // localized UI string, cp1250
 
     // GameScript::initializeInstanceItem hook: story items get their in-game name and description.
     void onItemInit(zenkit::IItem& item, std::string_view instanceName);
     // Line an NPC sent by the Game Master opens the conversation with (cp1250); empty if none. One-shot.
-    std::string takeOpening(const std::string& npcId);
+    // `utf8` (optional) receives the same line in UTF-8, for voice synthesis.
+    std::string takeOpening(const std::string& npcId, std::string* utf8 = nullptr);
 
   private:
     GrogHost() = default;
@@ -73,22 +78,26 @@ class GrogHost final {
     void tickFights(World& world);
     void startFistFight(World& world, Npc& npc, Npc& target);
     void rearm(World& world, const std::string& npcInstance);
+    void waitOrphans();  // blocks until every abandoned future is done (they reference the session)
 
     struct PendingFight { std::string npcInstance, targetInstance; };  // targetInstance empty = the player
     struct Disarmed     { std::string npcInstance; size_t weapon = 0; int64_t untilS = 0; };
     std::vector<PendingFight>                     pendingFights;   // started once the dialogue is closed
     std::vector<Disarmed>                         disarmed;        // weapons put away for a fist fight
     std::map<std::string, std::string>            openings;        // npc id -> opening line (cp1250)
+    std::map<std::string, std::string>            openingsUtf8;    // npc id -> the same line (UTF-8)
     std::filesystem::path logDir;
 
     std::optional<grog::ai::GameData>             gameData;
     grog::ai::AiConfig                            config;
     std::unique_ptr<grog::ai::IHttpClient>        http;
     std::unique_ptr<grog::ai::ILlmProvider>       actor, director;
+    std::unique_ptr<grog::ai::ITtsProvider>       tts;             // nullptr = voice off; outlives the session
     std::ofstream                                 logFile;
     std::unique_ptr<grog::ai::Telemetry>          telemetry;
     std::unique_ptr<grog::ai::GameSession>        session;
     std::vector<std::future<grog::ai::TurnResult>> orphans;
+    std::vector<std::future<grog::ai::Speech>>     speechOrphans;
     std::future<grog::ai::DirectorResult>          directorPending;
     std::string                                   pendingLoad;
     bool                                          finished = false;

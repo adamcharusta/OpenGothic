@@ -559,7 +559,7 @@ void DialogMenu::onSelect() {
     return;
     }
 #ifdef GROG_AI
-  if(grog.active) { // GROG: the only choice is "End"
+  if(grog.active || grog.endAfter) { // GROG: the only choice is "End" (no-op while the dialog is ending)
     grogEnd();
     return;
     }
@@ -606,7 +606,7 @@ void DialogMenu::keyDownEvent(KeyEvent &e) {
     }
 
 #ifdef GROG_AI
-  if(grog.active && grogKeyDown(e)) // GROG:
+  if((grog.active || grog.pendingSpeech.valid()) && grogKeyDown(e)) // GROG: also Esc on a pending farewell
     return;
 #endif
   if(e.key==Event::K_Return){

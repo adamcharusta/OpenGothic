@@ -3,8 +3,14 @@
 #ifdef GROG_AI
 #include "ui/dialogmenu.h"
 
+#include <Tempest/Log>
+#include <Tempest/MemReader>
 #include <Tempest/Painter>
+#include <Tempest/Sound>
 
+#include <grog/ai/tts.h>
+
+#include <algorithm>
 #include <chrono>
 
 #include "grog/groghost.h"
@@ -43,6 +49,20 @@ void popUtf8(std::string& s) {
   }
 }
 
+template<class T>
+bool isReady(const std::future<T>& f) {
+  return f.wait_for(std::chrono::seconds(0))==std::future_status::ready;
+}
+
+// One-time hints: a missing/broken GrogAI.ini first, then what went wrong with a provider (UTF-8, once per kind).
+void printHints(std::string_view providerHintUtf8) {
+  std::string hint = GrogHost::inst().takeHint();
+  if(!hint.empty())
+    Gothic::inst().onPrint(hint);
+  if(!providerHintUtf8.empty())
+    Gothic::inst().onPrint(toGameText(providerHintUtf8));
+}
+
 }  // namespace
 
 bool DialogMenu::grogStart(Npc& p, Npc& ot) {
@@ -51,7 +71,7 @@ bool DialogMenu::grogStart(Npc& p, Npc& ot) {
   if(!id)
     return false;  // not a pirate with a card: original dialogues
 
-  grog          = GrogState();
+  grogReset();  // hands any future still in flight to the host instead of destroying (= waiting for) it
   grog.active   = true;
   grog.npcId    = *id;
   state         = State::Active;
@@ -70,25 +90,60 @@ bool DialogMenu::grogStart(Npc& p, Npc& ot) {
   if(!hint.empty())
     Gothic::inst().onPrint(hint);
   // Sent by the Game Master: the NPC speaks first (the line is already in its AI memory).
-  std::string opening = host.takeOpening(*id);
-  if(!opening.empty())
-    grogSay(ot, opening);
+  std::string openingUtf8;
+  std::string opening = host.takeOpening(*id, &openingUtf8);
+  if(!opening.empty()) {
+    auto* session = host.gameSession();
+    if(host.voiceOn() && session!=nullptr && !openingUtf8.empty()) {
+      // Voice on: subtitle and audio appear together once the line is synthesized (grogTick).
+      grog.speechText    = opening;
+      grog.pendingSpeech = session->speakAsync(*id, std::move(openingUtf8), false);
+      } else {
+      grogSay(ot, opening);
+      }
+    }
   update();
   return true;
   }
 
-void DialogMenu::grogSay(Npc& npc, std::string_view gameText) {
+void DialogMenu::grogSay(Npc& npc, std::string_view gameText, std::string_view wav) {
   const uint64_t len = gameText.size();
   current.txt     = std::string(gameText);
   current.msgTime = std::min<uint64_t>(1500 + 55*len, 15000);
-  current.time    = current.msgTime + (dlgAnimation ? ANIM_TIME*2 : 0);
   currentSnd      = SoundEffect();
+  if(!wav.empty()) {
+    // The same slot and volume path as the original voice lines (aiOutput).
+    try {
+      Tempest::MemReader rd(wav.data(), wav.size());
+      Tempest::Sound     snd(rd);
+      if(!snd.isEmpty()) {
+        uint64_t ms = uint64_t(wavDurationMs(wav).value_or(int(snd.timeLength())));
+        currentSnd      = soundDevice.load(snd);
+        current.msgTime = std::max<uint64_t>(ms + 300, 1500);
+        currentSnd.play();
+        }
+      }
+    catch(...) {
+      Log::e("[grog] unable to play the NPC voice line");
+      currentSnd = SoundEffect();
+      }
+    }
+  current.time    = current.msgTime + (dlgAnimation ? ANIM_TIME*2 : 0);
   curentIsPl      = (&npc==pl);
   npc.setAiOutputBarrier(current.msgTime,false);
   update();
   }
 
 bool DialogMenu::grogKeyDown(KeyEvent& e) {
+  if(!grog.active) {
+    // A voiced farewell is being synthesized: Esc stops waiting for it, the dialog closes (endAfter).
+    if(e.key==Event::K_ESCAPE && grog.pendingSpeech.valid()) {
+      GrogHost::inst().adopt(std::move(grog.pendingSpeech));
+      grog.speechText.clear();
+      update();
+      }
+    return true;
+    }
   if(e.key==Event::K_ESCAPE) {
     if(current.time>0)
       skipPhrase(); else
@@ -96,7 +151,7 @@ bool DialogMenu::grogKeyDown(KeyEvent& e) {
     return true;
     }
   if(e.key==Event::K_Return) {
-    if(grog.pending.valid() || current.time>0 || haveToWaitOutput())
+    if(grog.pending.valid() || grog.pendingSpeech.valid() || current.time>0 || haveToWaitOutput())
       return true;
     if(grog.input.empty()) {
       grogEnd();
@@ -129,6 +184,18 @@ bool DialogMenu::grogKeyDown(KeyEvent& e) {
 
 void DialogMenu::grogTick() {
   GrogHost::inst().tick();
+  if(grog.pendingSpeech.valid()) {
+    // Voiced opening or farewell: shown when ready; a farewell's endAfter waits for it.
+    if(current.time>0 || !isReady(grog.pendingSpeech))
+      return;
+    Speech      s    = grog.pendingSpeech.get();
+    std::string text = grog.speechText.empty() ? toGameText(s.text) : std::move(grog.speechText);
+    grog.speechText.clear();
+    if(other!=nullptr && !text.empty())
+      grogSay(*other, text, s.audioWav);
+    printHints(s.hint);
+    return;
+    }
   if(!grog.active && !grog.endAfter)
     return;
   if(grog.endAfter && current.time==0 && !haveToWaitOutput()) {
@@ -138,13 +205,13 @@ void DialogMenu::grogTick() {
     }
   if(!grog.pending.valid() || current.time>0)
     return;
-  if(grog.pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
+  if(!isReady(grog.pending))
     return;
 
   TurnResult r = grog.pending.get();
   if(other==nullptr || pl==nullptr)
     return;
-  grogSay(*other, toGameText(r.speech));
+  grogSay(*other, toGameText(r.speech), r.audioWav);
 
   auto& host = GrogHost::inst();
   if(auto* data = host.data()) {
@@ -159,24 +226,25 @@ void DialogMenu::grogTick() {
       grog.endAfter = true;
       }
     }
-  if(r.error && r.usedFallback) {
-    std::string hint = host.takeHint();  // missing/broken GrogAI.ini first
-    if(hint.empty() && !r.hint.empty())
-      hint = toGameText(r.hint);         // then what went wrong with the provider (once per kind)
-    if(!hint.empty())
-      Gothic::inst().onPrint(hint);
-    }
+  printHints(r.hint);  // LLM or voice hint, whenever there is one
   }
 
 void DialogMenu::grogEnd() {
   if(!grog.active)
     return;
+  auto& host = GrogHost::inst();
   if(grog.pending.valid())
-    GrogHost::inst().adopt(std::move(grog.pending));
+    host.adopt(std::move(grog.pending));
+  if(grog.pendingSpeech.valid())
+    host.adopt(std::move(grog.pendingSpeech));  // an opening still being synthesized
+  grog.speechText.clear();
   grog.active = false;
-  auto* session = GrogHost::inst().gameSession();
+  auto* session = host.gameSession();
   if(session!=nullptr && other!=nullptr) {
-    grogSay(*other, toGameText(session->farewell(grog.npcId)));
+    if(host.voiceOn())
+      grog.pendingSpeech = session->farewellAsync(grog.npcId);  // said in grogTick, then endAfter closes
+    else
+      grogSay(*other, toGameText(session->farewell(grog.npcId)));
     grog.endAfter = true;
     } else {
     choice.clear();
@@ -187,6 +255,8 @@ void DialogMenu::grogEnd() {
 void DialogMenu::grogReset() {
   if(grog.pending.valid())
     GrogHost::inst().adopt(std::move(grog.pending));
+  if(grog.pendingSpeech.valid())
+    GrogHost::inst().adopt(std::move(grog.pendingSpeech));
   grog = GrogState();
   }
 
@@ -194,7 +264,7 @@ int DialogMenu::grogPaintInput(Painter* p, int x, int y, int w) {
   const float scale = Gothic::interfaceScale(this);
   auto fnt = Resources::font(Resources::FontType::Hi, scale);
   std::string text;
-  if(grog.pending.valid())
+  if(grog.pending.valid() || grog.pendingSpeech.valid())
     text = "> ...";
   else
     text = "> " + toGameText(grog.input) + "_";

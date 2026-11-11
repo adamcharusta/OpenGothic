@@ -102,19 +102,23 @@ std::string GrogHost::ui(const char* pl, const char* en) const {
 }
 
 void GrogHost::onStartGame(bool newGame) {
+  // Abandoned answers/lines and the director still reference the old session and its providers.
+  waitOrphans();
+  if(directorPending.valid())
+    directorPending.wait();
+  directorPending = {};
   session.reset();
+  tts.reset();
   telemetry.reset();
   director.reset();
   actor.reset();
   hint.clear();
-  if(directorPending.valid())
-    directorPending.wait();
-  directorPending = {};
   finished       = false;
   hintShown      = false;
   pendingFights.clear();
   disarmed.clear();
   openings.clear();
+  openingsUtf8.clear();
   newGamePending = newGame;
   startTicks     = nowMs();
 
@@ -147,6 +151,7 @@ void GrogHost::onStartGame(bool newGame) {
   http     = makeHttpClient();
   actor    = makeProvider(config.actor, *http);
   director = makeProvider(config.director, *http);
+  tts      = makeTtsProvider(config.tts, *http);  // nullptr when [tts] is missing or provider = off
 
   uint64_t seed = config.seed.value_or(uint64_t(std::chrono::system_clock::now().time_since_epoch().count()));
   logDir = pathFromUtf8(config.logDir);
@@ -156,10 +161,20 @@ void GrogHost::onStartGame(bool newGame) {
     logDir = userDir() / "logs";
   std::error_code ec;
   fs::create_directories(logDir, ec);
+  if(tts!=nullptr && !config.tts.cacheDir.empty()) {
+    // The session uses cacheDir as given: make it absolute (mod root first, then the user's folder).
+    fs::path cacheDir = pathFromUtf8(config.tts.cacheDir);
+    if(cacheDir.is_relative())
+      cacheDir = root / cacheDir;
+    if(!writableDir(cacheDir))
+      cacheDir = userDir() / "tts_cache";
+    config.tts.cacheDir = pathToUtf8(cacheDir);
+    }
   logFile.close();
   logFile.open(logDir / ("session-" + std::to_string(seed) + ".jsonl"), std::ios::binary | std::ios::app);
   telemetry = std::make_unique<Telemetry>(logFile, true, gameData->pricing);
   session   = std::make_unique<grog::ai::GameSession>(config, *gameData, *actor, *director, *telemetry, seed);
+  session->setTts(tts.get());
   Tempest::Log::i("[grog] session started: ", redactedSummary(config), " seed=", seed);
   }
 
@@ -171,12 +186,21 @@ void GrogHost::onSessionExit() {
     writeSummary("summary");  // quit without an ending: outcome "playing"
 
   // Wait for answers still in flight: they reference the session.
+  waitOrphans();
+  session.reset();
+  tts.reset();
+  telemetry.reset();
+  }
+
+void GrogHost::waitOrphans() {
   for(auto& f:orphans)
     if(f.valid())
       f.wait();
   orphans.clear();
-  session.reset();
-  telemetry.reset();
+  for(auto& f:speechOrphans)
+    if(f.valid())
+      f.wait();
+  speechOrphans.clear();
   }
 
 void GrogHost::tick() {
@@ -188,11 +212,20 @@ void GrogHost::tick() {
                   return !f.valid() || f.wait_for(std::chrono::seconds(0))==std::future_status::ready;
                 }),
                 orphans.end());
+  speechOrphans.erase(std::remove_if(speechOrphans.begin(), speechOrphans.end(), [](std::future<Speech>& f) {
+                        return !f.valid() || f.wait_for(std::chrono::seconds(0))==std::future_status::ready;
+                      }),
+                      speechOrphans.end());
   }
 
 void GrogHost::adopt(std::future<TurnResult>&& f) {
   if(f.valid())
     orphans.push_back(std::move(f));
+  }
+
+void GrogHost::adopt(std::future<Speech>&& f) {
+  if(f.valid())
+    speechOrphans.push_back(std::move(f));
   }
 
 std::string GrogHost::takeHint() {
@@ -332,7 +365,13 @@ void GrogHost::onItemInit(zenkit::IItem& item, std::string_view instanceName) {
     }
   }
 
-std::string GrogHost::takeOpening(const std::string& npcId) {
+std::string GrogHost::takeOpening(const std::string& npcId, std::string* utf8) {
+  auto u = openingsUtf8.find(npcId);
+  if(u!=openingsUtf8.end()) {
+    if(utf8!=nullptr)
+      *utf8 = std::move(u->second);
+    openingsUtf8.erase(u);
+    }
   auto it = openings.find(npcId);
   if(it==openings.end())
     return {};
@@ -558,8 +597,10 @@ void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, N
         }
       case EngineAction::NpcApproachPlayer: {
         if(Npc* npc = findNpc(world, a.npcInstance)) {
-          if(auto id = aiNpcId(*npc); id && !a.text.empty())
-            openings[*id] = a.text;
+          if(auto id = aiNpcId(*npc); id && !a.text.empty()) {
+            openings[*id]     = a.text;
+            openingsUtf8[*id] = a.textUtf8;
+            }
           npc->aiPush(AiQueue::aiGoToNpc(&hero));
           npc->aiPush(AiQueue::aiProcessInfo(hero));
           }

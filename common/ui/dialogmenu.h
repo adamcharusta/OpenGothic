@@ -160,13 +160,15 @@ class DialogMenu : public Tempest::Widget {
       std::string                        npcId;
       std::string                        input;             // UTF-8
       std::future<grog::ai::TurnResult>  pending;
+      std::future<grog::ai::Speech>      pendingSpeech;     // GROG: voiced opening/farewell being synthesized
+      std::string                        speechText;        // GROG: its line (cp1250); empty = use Speech::text
       };
     GrogState                           grog;
 
     bool grogStart  (Npc& pl, Npc& other);
     bool grogKeyDown(Tempest::KeyEvent& e);
     void grogTick   ();
-    void grogSay    (Npc& npc, std::string_view gameText);
+    void grogSay    (Npc& npc, std::string_view gameText, std::string_view wav = {});  // GROG: wav = voice
     void grogEnd    ();
     void grogReset  ();
     int  grogPaintInput(Tempest::Painter* p, int x, int y, int w);  // returns height; p==nullptr measures
