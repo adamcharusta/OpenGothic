@@ -3314,9 +3314,21 @@ bool GameScript::grogAttack(Npc& npc, Npc& target) {
   }
 
 // GROG: quest log entries written by the AI Game Master
-void GameScript::grogQuestEntry(std::string_view topic, std::string_view entry) {
+// Goes through the game's own B_LogEntry when it exists: the entry, the localized "new log entry"
+// screen text and the LogEntry sound, exactly like quest updates in the original game.
+bool GameScript::grogQuestEntry(std::string_view topic, std::string_view entry) {
   quests.add(topic,QuestLog::Mission);
+  if(auto* fn = vm.find_symbol_by_name("B_LogEntry")) {
+    try {
+      vm.call_function<void>(fn, topic, entry);
+      return true;
+      }
+    catch(const std::exception& e) {
+      Tempest::Log::e("[grog] B_LogEntry: ", e.what());
+      }
+    }
   quests.addEntry(topic,entry);
+  return false;
   }
 
 void GameScript::log_addentry(std::string_view topicName, std::string_view entry) {

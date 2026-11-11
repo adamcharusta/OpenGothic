@@ -316,6 +316,7 @@ class Npc final {
 
     void      addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point);
     void      excRoutine(size_t callback);
+    void      clearRoutines() { routines.clear(); }  // grog: replace a routine from C++
     void      multSpeed(float s);
 
     bool      testMove(const Tempest::Vec3& pos);

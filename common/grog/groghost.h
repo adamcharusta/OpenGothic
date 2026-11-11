@@ -66,6 +66,7 @@ class GrogHost final {
   private:
     GrogHost() = default;
     void setupWorld(World& world);
+    void applyRoutine(World& world, Npc& npc, const grog::ai::CastMember& m);
     void tickDirector(World& world);
     void finishGame(const std::string& outcome);
     void writeSummary(const char* event);  // summary-<seed>.json + a log event ("ending" / "summary")

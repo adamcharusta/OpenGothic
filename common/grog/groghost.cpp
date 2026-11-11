@@ -18,6 +18,7 @@
 #include "world/waypoint.h"
 #include "world/world.h"
 #include "gothic.h"
+#include "camera.h"
 #include "gamemusic.h"
 #include "world/objects/item.h"
 
@@ -445,8 +446,13 @@ void GrogHost::setupWorld(World& world) {
   // Every cast member must be in the camp.
   for(auto& m:gameData->cast.npcs) {
     size_t id = script.findSymbolIndex(m.instance);
-    if(id!=size_t(-1) && world.findNpcByInstance(id)==nullptr)
-      world.addNpc(id, gameData->start.waypoint);
+    if(id==size_t(-1))
+      continue;
+    Npc* npc = world.findNpcByInstance(id);
+    if(npc==nullptr)
+      npc = world.addNpc(id, gameData->start.waypoint);
+    if(npc!=nullptr && !m.routine.empty())
+      applyRoutine(world, *npc, m);
     }
 
   // Story items where the scenario/cards put them.
@@ -466,7 +472,43 @@ void GrogHost::setupWorld(World& world) {
       npc->addItem(item,1);
       }
     }
+  // Quest log entries the session starts with (start.json first_quest: "talk to Greg").
+  for(auto& q:ws.quests)
+    script.grogQuestEntry(ui("Kufel Grega", "Greg's tankard"), toGameText(q.text));
+
+  // The camera was placed at the original spawn before this teleport: snap it, don't let it glide over.
+  if(auto* cam = Gothic::inst().camera())
+    cam->reset(hero);
   Tempest::Log::i("[grog] world prepared: ", world.name());
+  }
+
+// Some cast members start far from the camp in the original game (Malcolm alone at the lumber camp,
+// Angus and Hank in the waterhole cave). Far NPCs are not simulated, so they never walk over.
+// Give them the routine from cast.json and move them there right away.
+void GrogHost::applyRoutine(World& world, Npc& npc, const CastMember& m) {
+  auto& script = world.script();
+  if(npc.isDead()) {
+    Tempest::Log::e("[grog] cast member is dead: ", m.id);
+    return;
+    }
+  if(!m.routine.function.empty()) {
+    size_t fn = script.findSymbolIndex(m.routine.function);
+    if(fn==size_t(-1)) {
+      Tempest::Log::e("[grog] routine not found: ", m.routine.function);
+      return;
+      }
+    npc.excRoutine(fn);
+    } else {
+    size_t st = script.findSymbolIndex(m.routine.state);
+    if(st==size_t(-1) || world.findPoint(m.routine.waypoint,false)==nullptr) {
+      Tempest::Log::e("[grog] routine state/waypoint not found: ", m.routine.state, " ", m.routine.waypoint);
+      return;
+      }
+    npc.clearRoutines();
+    npc.addRoutine(gtime(5,0),  gtime(20,0), uint32_t(st), m.routine.waypoint);
+    npc.addRoutine(gtime(20,0), gtime(5,0),  uint32_t(st), m.routine.waypoint);
+    }
+  npc.resetPositionToTA();
   }
 
 void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, Npc& hero) {
@@ -475,8 +517,8 @@ void GrogHost::execute(const std::vector<EngineAction>& actions, World& world, N
     switch(a.kind) {
       case EngineAction::QuestEntry: {
         std::string topic = ui("Kufel Grega", "Greg's tankard");
-        script.grogQuestEntry(topic, a.text);
-        Gothic::inst().onPrint(ui("Nowy wpis w dzienniku", "New log entry"));
+        if(!script.grogQuestEntry(topic, a.text))  // true: the game's B_LogEntry already told the player
+          Gothic::inst().onPrint(ui("Nowy wpis w dzienniku", "New log entry"));
         break;
         }
       case EngineAction::GiveItemToPlayer: {
